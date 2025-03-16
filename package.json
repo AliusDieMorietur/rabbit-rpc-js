@@ -7,6 +7,10 @@
   "files": [
     "dist"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AliusDieMorietur/rabbit-rpc-js"
+  },
   "scripts": {
     "test": "vitest --silent=false",
     "build": "tsup src/index.ts --dts",
