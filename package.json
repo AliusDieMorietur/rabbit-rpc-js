@@ -1,0 +1,32 @@
+{
+  "name": "rabbit-rpc-js",
+  "version": "1.0.0",
+  "description": "RPC for RabbitMQ",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "vitest --silent=false",
+    "build": "tsup src/index.ts --dts",
+    "prepublishOnly": "pnpm run build"
+  },
+  "keywords": [],
+  "author": "aliusDieMorietur",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@10.6.2",
+  "devDependencies": {
+    "@types/amqplib": "^0.10.7",
+    "@types/node": "^22.13.10",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.5"
+  }
+}
