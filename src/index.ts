@@ -63,8 +63,15 @@ export class RabbitRPC {
     });
   }
 
-  handleMessage<T, U>(type: string, fn: (args: T) => Promise<U>): void {
-    this.#handlersMap.set(type, async (data) => await fn(data as T));
+  handleMessage<T, U>(
+    queue: string,
+    type: string,
+    fn: (args: T) => Promise<U>
+  ): void {
+    this.#handlersMap.set(
+      this.#buildEventTypeKey(queue, type),
+      async (data) => await fn(data as T)
+    );
   }
 
   makeCall<T, U>(queue: string, type: Message["type"]) {
@@ -83,42 +90,50 @@ export class RabbitRPC {
     await this.#connection.close();
   }
 
-  async #onMessage(message: amqp.ConsumeMessage | null) {
-    if (!message) {
-      console.warn("Message is empty");
-      return;
-    }
-    const id = message.properties.correlationId;
-    if (this.#correlationIdMap.has(id)) {
-      const data = JSON.parse(message.content.toString());
-      const { resolve, timeout } = this.#correlationIdMap.get(id)!;
-      clearTimeout(timeout);
-      resolve(data);
-      this.#correlationIdMap.delete(id);
-    } else {
-      const data = JSON.parse(message.content.toString()) as Message;
-      const handler = this.#handlersMap.get(data.type);
-      if (handler) {
-        const result = await handler(data.data);
-        const dataToSend = result ?? {
-          success: true,
-        };
-        this.#channel.sendToQueue(
-          message.properties.replyTo,
-          Buffer.from(JSON.stringify(dataToSend)),
-          {
-            correlationId: id,
-          }
-        );
+  #buildEventTypeKey(queue: string, type: string) {
+    return `${queue}_${type}`;
+  }
+
+  #onMessage(queue: string) {
+    return async (message: amqp.ConsumeMessage | null) => {
+      if (!message) {
+        console.warn("Message is empty");
+        return;
       }
-    }
-    this.#channel.ack(message);
+      const id = message.properties.correlationId;
+      if (this.#correlationIdMap.has(id)) {
+        const data = JSON.parse(message.content.toString());
+        const { resolve, timeout } = this.#correlationIdMap.get(id)!;
+        clearTimeout(timeout);
+        resolve(data);
+        this.#correlationIdMap.delete(id);
+      } else {
+        const data = JSON.parse(message.content.toString()) as Message;
+        const handler = this.#handlersMap.get(
+          this.#buildEventTypeKey(queue, data.type)
+        );
+        if (handler) {
+          const result = await handler(data.data);
+          const dataToSend = result ?? {
+            success: true,
+          };
+          this.#channel.sendToQueue(
+            message.properties.replyTo,
+            Buffer.from(JSON.stringify(dataToSend)),
+            {
+              correlationId: id,
+            }
+          );
+        }
+      }
+      this.#channel.ack(message);
+    };
   }
 
   async addReceiver(queue: string, settings: QueueSettings) {
     this.#queueSettings.set(queue, settings);
     await this.#channel.assertQueue(queue, { durable: true });
-    await this.#channel.consume(queue, this.#onMessage.bind(this));
+    await this.#channel.consume(queue, this.#onMessage.bind(this)(queue));
   }
 
   async addSender(queue: string, settings: QueueSettings) {
@@ -127,7 +142,7 @@ export class RabbitRPC {
     this.#senderKeysMap.set(queue, senderKey);
     await this.#channel.assertQueue(queue, { durable: true });
     await this.#channel.assertQueue(senderKey, { durable: true });
-    await this.#channel.consume(senderKey, this.#onMessage.bind(this));
+    await this.#channel.consume(senderKey, this.#onMessage.bind(this)(queue));
   }
 
   static async init({

@@ -11,7 +11,7 @@ test("Echo example. Single receiver. Single sender", async () => {
     },
   });
 
-  receiver.handleMessage<string, string>("echo", async (data) => data);
+  receiver.handleMessage<string, string>("t1q1", "echo", async (data) => data);
 
   const sender = await RabbitRPC.init({
     connectionString,
@@ -38,8 +38,8 @@ test("Echo example. Multiple receivers. Single sender", async () => {
     },
   });
 
-  receiver1.handleMessage<void, string>("echo1", async () => "echo1");
-  receiver1.handleMessage<void, string>("echo2", async () => "echo2");
+  receiver1.handleMessage<void, string>("t2q1", "echo1", async () => "echo1");
+  receiver1.handleMessage<void, string>("t2q1", "echo2", async () => "echo2");
 
   const receiver2 = await RabbitRPC.init({
     connectionString,
@@ -48,8 +48,8 @@ test("Echo example. Multiple receivers. Single sender", async () => {
     },
   });
 
-  receiver2.handleMessage<void, string>("echo1", async () => "echo2");
-  receiver2.handleMessage<void, string>("echo2", async () => "echo2");
+  receiver2.handleMessage<void, string>("t2q1", "echo1", async () => "echo2");
+  receiver2.handleMessage<void, string>("t2q1", "echo2", async () => "echo2");
 
   const sender = await RabbitRPC.init({
     connectionString,
@@ -79,8 +79,8 @@ test("Echo example. Multiple receivers. Multiple senders", async () => {
     },
   });
 
-  receiver1.handleMessage<void, string>("echo1", async () => "echo1");
-  receiver1.handleMessage<void, string>("echo2", async () => "echo2");
+  receiver1.handleMessage<void, string>("t3q1", "echo1", async () => "echo1");
+  receiver1.handleMessage<void, string>("t3q1", "echo2", async () => "echo2");
 
   const receiver2 = await RabbitRPC.init({
     connectionString,
@@ -89,8 +89,8 @@ test("Echo example. Multiple receivers. Multiple senders", async () => {
     },
   });
 
-  receiver2.handleMessage<void, string>("echo1", async () => "echo1");
-  receiver2.handleMessage<void, string>("echo2", async () => "echo2");
+  receiver2.handleMessage<void, string>("t3q1", "echo1", async () => "echo1");
+  receiver2.handleMessage<void, string>("t3q1", "echo2", async () => "echo2");
 
   const sender1 = await RabbitRPC.init({
     connectionString,
@@ -130,7 +130,7 @@ test("Echo example. Two way messaging", async () => {
     },
   });
 
-  a.handleMessage<void, string>("a", async () => "a");
+  a.handleMessage<void, string>("t4a", "a", async () => "a");
   const callToB = a.makeCall<void, string>("t4b", "b");
 
   const b = await RabbitRPC.init({
@@ -141,7 +141,7 @@ test("Echo example. Two way messaging", async () => {
     },
   });
 
-  b.handleMessage<void, string>("b", async () => "b");
+  b.handleMessage<void, string>("t4b", "b", async () => "b");
   const callToA = b.makeCall<void, string>("t4a", "a");
 
   const [dataA, dataB] = await Promise.all([callToA(), callToB()]);
