@@ -36,7 +36,7 @@ const receiver = await RabbitRPC.init({
   },
 });
 
-receiver.handleMessage("echo", async (data) => data);
+receiver.handleMessage("t1q1", "echo", async (data) => data);
 
 const sender = await RabbitRPC.init({
   connectionString,
