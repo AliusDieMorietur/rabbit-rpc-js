@@ -1,34 +1,45 @@
 import amqp from "amqplib";
 import crypto from "node:crypto";
 
-type Message = {
+export type Message = {
   type: string;
   data: unknown;
 };
 
-const buildSenderKey = (queue: string) => `${queue}_${crypto.randomUUID()}`;
-
+export type QueueSettings = {
+  type: "receiver" | "sender";
+  callTimeout?: number;
+};
 export class RabbitRPC {
-  #correlationIdMap: Map<string, (value: Message) => void> = new Map();
+  #defaultCallTimeout: number = 10_000;
+  #correlationIdMap: Map<
+    string,
+    {
+      resolve: (value: Message) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  > = new Map();
   #handlersMap: Map<string, (data: Message["data"]) => Promise<unknown>> =
     new Map();
   #connection: amqp.ChannelModel;
   #senderKeysMap: Map<string, string> = new Map();
   #channel: amqp.Channel;
-  #callTimeout: number;
+  #queueSettings: Map<string, QueueSettings> = new Map();
 
   constructor({
     channel,
     connection,
-    messageTimeout,
   }: {
     channel: amqp.Channel;
     connection: amqp.ChannelModel;
-    messageTimeout?: number;
   }) {
     this.#channel = channel;
     this.#connection = connection;
-    this.#callTimeout = messageTimeout ?? 10_000;
+  }
+
+  #buildSenderKey(queue: string) {
+    return `${queue}_${crypto.randomUUID()}`;
   }
 
   call(queue: string, message: Message) {
@@ -37,16 +48,18 @@ export class RabbitRPC {
     }
     const senderKey = this.#senderKeysMap.get(queue)!;
     const id = crypto.randomUUID();
+    const callTimeout =
+      this.#queueSettings.get(queue)?.callTimeout ?? this.#defaultCallTimeout;
     return new Promise((resolve, reject) => {
-      this.#correlationIdMap.set(id, resolve);
+      const timeout = setTimeout(() => {
+        this.#correlationIdMap.delete(id);
+        reject(new Error(`Call timeout for queue: '${queue}'`));
+      }, callTimeout);
+      this.#correlationIdMap.set(id, { resolve, timeout, reject });
       this.#channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
         correlationId: id,
         replyTo: senderKey,
       });
-      setTimeout(() => {
-        this.#correlationIdMap.delete(id);
-        reject(new Error(`Call timeout for queue: '${queue}'`));
-      }, this.#callTimeout);
     });
   }
 
@@ -62,6 +75,10 @@ export class RabbitRPC {
   }
 
   async close() {
+    for (const values of this.#correlationIdMap.values()) {
+      clearTimeout(values.timeout);
+      values.reject(new Error("Connection closed"));
+    }
     await this.#channel.close();
     await this.#connection.close();
   }
@@ -74,8 +91,9 @@ export class RabbitRPC {
     const id = message.properties.correlationId;
     if (this.#correlationIdMap.has(id)) {
       const data = JSON.parse(message.content.toString());
-      const resolve = this.#correlationIdMap.get(id);
-      resolve!(data);
+      const { resolve, timeout } = this.#correlationIdMap.get(id)!;
+      clearTimeout(timeout);
+      resolve(data);
       this.#correlationIdMap.delete(id);
     } else {
       const data = JSON.parse(message.content.toString()) as Message;
@@ -97,13 +115,15 @@ export class RabbitRPC {
     this.#channel.ack(message);
   }
 
-  async addReceiver(queue: string) {
+  async addReceiver(queue: string, settings: QueueSettings) {
+    this.#queueSettings.set(queue, settings);
     await this.#channel.assertQueue(queue, { durable: true });
     await this.#channel.consume(queue, this.#onMessage.bind(this));
   }
 
-  async addSender(queue: string) {
-    const senderKey = buildSenderKey(queue);
+  async addSender(queue: string, settings: QueueSettings) {
+    this.#queueSettings.set(queue, settings);
+    const senderKey = this.#buildSenderKey(queue);
     this.#senderKeysMap.set(queue, senderKey);
     await this.#channel.assertQueue(queue, { durable: true });
     await this.#channel.assertQueue(senderKey, { durable: true });
@@ -115,7 +135,7 @@ export class RabbitRPC {
     queues,
   }: {
     connectionString: string;
-    queues: Record<string, "receiver" | "sender">;
+    queues: Record<string, QueueSettings>;
   }) {
     const connection = await amqp.connect(connectionString);
     const channel = await connection.createChannel();
@@ -126,10 +146,10 @@ export class RabbitRPC {
     });
 
     await Promise.all(
-      Object.entries(queues).map(async ([queue, type]) =>
-        type === "receiver"
-          ? rabbitRPC.addReceiver(queue)
-          : rabbitRPC.addSender(queue)
+      Object.entries(queues).map(async ([queue, settings]) =>
+        settings.type === "receiver"
+          ? rabbitRPC.addReceiver(queue, settings)
+          : rabbitRPC.addSender(queue, settings)
       )
     );
 
