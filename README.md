@@ -25,31 +25,31 @@ pnpm add rabbit-rpc-js
 ## Usage
 
 ```ts
-import { RabbitRPC } from "rabbit-rpc-js";
+const receiver = new RabbitRPC();
 
-const connectionString = "amqp://admin:admin@localhost:5672";
+receiver.handleMessage<string, string>("t1q1", "echo", async (data) => data);
 
-const receiver = await RabbitRPC.init({
+await receiver.init({
   connectionString,
   queues: {
     t1q1: { type: "receiver" },
   },
 });
 
-receiver.handleMessage("t1q1", "echo", async (data) => data);
+const sender = new RabbitRPC();
 
-const sender = await RabbitRPC.init({
+const echo = sender.makeCall<string, string>("t1q1", "echo");
+
+await sender.init({
   connectionString,
   queues: {
     t1q1: { type: "sender" },
   },
 });
 
-const echo = sender.makeCall("t1q1", "echo");
-
 const data = await echo("Hello world");
 
-console.log("data", data);
+console.log(data);
 
 await receiver.close();
 await sender.close();

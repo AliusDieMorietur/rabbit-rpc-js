@@ -22,20 +22,25 @@ export class RabbitRPC {
   > = new Map();
   #handlersMap: Map<string, (data: Message["data"]) => Promise<unknown>> =
     new Map();
-  #connection: amqp.ChannelModel;
+  #connection?: amqp.ChannelModel;
   #senderKeysMap: Map<string, string> = new Map();
-  #channel: amqp.Channel;
+  #channel?: amqp.Channel;
   #queueSettings: Map<string, QueueSettings> = new Map();
 
-  constructor({
-    channel,
-    connection,
-  }: {
-    channel: amqp.Channel;
-    connection: amqp.ChannelModel;
-  }) {
-    this.#channel = channel;
-    this.#connection = connection;
+  constructor() {}
+
+  async connect(connectionString: string) {
+    this.#connection = await amqp.connect(connectionString);
+    this.#channel = await this.#connection.createChannel();
+  }
+
+  #checkInitialized() {
+    if (!this.#channel) {
+      throw new Error("Channel is not initialized");
+    }
+    if (!this.#connection) {
+      throw new Error("Connection is not initialized");
+    }
   }
 
   #buildSenderKey(queue: string) {
@@ -43,6 +48,9 @@ export class RabbitRPC {
   }
 
   call(queue: string, message: Message) {
+    if (!this.#channel) {
+      throw new Error("Channel is not initialized");
+    }
     if (!this.#senderKeysMap.has(queue)) {
       throw new Error(`Sender key is not defined for queue: '${queue}'`);
     }
@@ -56,7 +64,7 @@ export class RabbitRPC {
         reject(new Error(`Call timeout for queue: '${queue}'`));
       }, callTimeout);
       this.#correlationIdMap.set(id, { resolve, timeout, reject });
-      this.#channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
+      this.#channel?.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
         correlationId: id,
         replyTo: senderKey,
       });
@@ -82,6 +90,12 @@ export class RabbitRPC {
   }
 
   async close() {
+    if (!this.#channel) {
+      throw new Error("Channel is not initialized");
+    }
+    if (!this.#connection) {
+      throw new Error("Connection is not initialized");
+    }
     for (const values of this.#correlationIdMap.values()) {
       clearTimeout(values.timeout);
       values.reject(new Error("Connection closed"));
@@ -96,6 +110,7 @@ export class RabbitRPC {
 
   #onMessage(queue: string) {
     return async (message: amqp.ConsumeMessage | null) => {
+      this.#checkInitialized();
       if (!message) {
         console.warn("Message is empty");
         return;
@@ -117,7 +132,7 @@ export class RabbitRPC {
           const dataToSend = result ?? {
             success: true,
           };
-          this.#channel.sendToQueue(
+          this.#channel!.sendToQueue(
             message.properties.replyTo,
             Buffer.from(JSON.stringify(dataToSend)),
             {
@@ -126,48 +141,41 @@ export class RabbitRPC {
           );
         }
       }
-      this.#channel.ack(message);
+      this.#channel!.ack(message);
     };
   }
 
   async addReceiver(queue: string, settings: QueueSettings) {
+    this.#checkInitialized();
     this.#queueSettings.set(queue, settings);
-    await this.#channel.assertQueue(queue, { durable: true });
-    await this.#channel.consume(queue, this.#onMessage.bind(this)(queue));
+    await this.#channel!.assertQueue(queue, { durable: true });
+    await this.#channel!.consume(queue, this.#onMessage.bind(this)(queue));
   }
 
   async addSender(queue: string, settings: QueueSettings) {
     this.#queueSettings.set(queue, settings);
     const senderKey = this.#buildSenderKey(queue);
     this.#senderKeysMap.set(queue, senderKey);
-    await this.#channel.assertQueue(queue, { durable: true });
-    await this.#channel.assertQueue(senderKey, { durable: true });
-    await this.#channel.consume(senderKey, this.#onMessage.bind(this)(queue));
+    await this.#channel!.assertQueue(queue, { durable: true });
+    await this.#channel!.assertQueue(senderKey, { durable: true });
+    await this.#channel!.consume(senderKey, this.#onMessage.bind(this)(queue));
   }
 
-  static async init({
+  async init({
     connectionString,
     queues,
   }: {
     connectionString: string;
     queues: Record<string, QueueSettings>;
   }) {
-    const connection = await amqp.connect(connectionString);
-    const channel = await connection.createChannel();
-
-    const rabbitRPC = new RabbitRPC({
-      channel,
-      connection,
-    });
+    await this.connect(connectionString);
 
     await Promise.all(
       Object.entries(queues).map(async ([queue, settings]) =>
         settings.type === "receiver"
-          ? rabbitRPC.addReceiver(queue, settings)
-          : rabbitRPC.addSender(queue, settings)
+          ? this.addReceiver(queue, settings)
+          : this.addSender(queue, settings)
       )
     );
-
-    return rabbitRPC;
   }
 }
