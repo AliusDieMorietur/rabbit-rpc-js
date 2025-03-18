@@ -58,5 +58,5 @@ await sender.close();
 ## Testing
 
 ```bash
-npm run test
+pnpm run test
 ```

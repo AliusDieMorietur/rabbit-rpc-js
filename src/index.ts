@@ -1,26 +1,36 @@
 import amqp from "amqplib";
 import crypto from "node:crypto";
 
-export type Message = {
-  type: string;
+type DataMessage = {
+  event: string;
+  type: "data";
   data: unknown;
 };
+
+type ErrorMessage = {
+  event: string;
+  type: "error";
+  error: string;
+};
+
+export type Message = DataMessage | ErrorMessage;
 
 export type QueueSettings = {
   type: "receiver" | "sender";
   callTimeout?: number;
 };
+
 export class RabbitRPC {
   #defaultCallTimeout: number = 10_000;
   #correlationIdMap: Map<
     string,
     {
-      resolve: (value: Message) => void;
+      resolve: (value: DataMessage["data"]) => void;
       reject: (error: Error) => void;
       timeout: ReturnType<typeof setTimeout>;
     }
   > = new Map();
-  #handlersMap: Map<string, (data: Message["data"]) => Promise<unknown>> =
+  #handlersMap: Map<string, (data: DataMessage["data"]) => Promise<unknown>> =
     new Map();
   #connection?: amqp.ChannelModel;
   #senderKeysMap: Map<string, string> = new Map();
@@ -47,7 +57,7 @@ export class RabbitRPC {
     return `${queue}_${crypto.randomUUID()}`;
   }
 
-  call(queue: string, message: Message) {
+  call(queue: string, message: Omit<DataMessage, "type">) {
     if (!this.#channel) {
       throw new Error("Channel is not initialized");
     }
@@ -64,10 +74,14 @@ export class RabbitRPC {
         reject(new Error(`Call timeout for queue: '${queue}'`));
       }, callTimeout);
       this.#correlationIdMap.set(id, { resolve, timeout, reject });
-      this.#channel?.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
-        correlationId: id,
-        replyTo: senderKey,
-      });
+      this.#channel?.sendToQueue(
+        queue,
+        Buffer.from(JSON.stringify({ ...message, type: "data" })),
+        {
+          correlationId: id,
+          replyTo: senderKey,
+        }
+      );
     });
   }
 
@@ -82,9 +96,9 @@ export class RabbitRPC {
     );
   }
 
-  makeCall<T, U>(queue: string, type: Message["type"]) {
+  makeCall<T, U>(queue: string, event: Message["event"]) {
     return async (args: T): Promise<U> => {
-      const data = await this.call(queue, { type, data: args });
+      const data = await this.call(queue, { event, data: args });
       return data as U;
     };
   }
@@ -117,21 +131,37 @@ export class RabbitRPC {
       }
       const id = message.properties.correlationId;
       if (this.#correlationIdMap.has(id)) {
-        const data = JSON.parse(message.content.toString());
-        const { resolve, timeout } = this.#correlationIdMap.get(id)!;
+        const data = JSON.parse(message.content.toString()) as Message;
+        const { resolve, reject, timeout } = this.#correlationIdMap.get(id)!;
         clearTimeout(timeout);
-        resolve(data);
+        if (data.type === "error") {
+          console.log("data.error", data.error);
+          reject(new Error(data.error));
+        } else {
+          resolve(data.data);
+        }
         this.#correlationIdMap.delete(id);
       } else {
-        const data = JSON.parse(message.content.toString()) as Message;
+        const data = JSON.parse(message.content.toString()) as DataMessage;
         const handler = this.#handlersMap.get(
-          this.#buildEventTypeKey(queue, data.type)
+          this.#buildEventTypeKey(queue, data.event)
         );
         if (handler) {
-          const result = await handler(data.data);
-          const dataToSend = result ?? {
-            success: true,
-          };
+          const result = await handler(data.data).catch((error) => error);
+          const dataToSend =
+            result instanceof Error
+              ? {
+                  event: data.event,
+                  type: "error",
+                  error: result.message,
+                }
+              : {
+                  event: data.event,
+                  type: "data",
+                  data: result ?? {
+                    success: true,
+                  },
+                };
           this.#channel!.sendToQueue(
             message.properties.replyTo,
             Buffer.from(JSON.stringify(dataToSend)),

@@ -203,7 +203,7 @@ test("Timeout", async () => {
   vi.useFakeTimers();
   const sender = new RabbitRPC();
 
-  const echo = sender.makeCall<string, string>("t5q1", "echo");
+  const echo = sender.makeCall<string, string>("t6q1", "echo");
 
   await sender.init({
     connectionString,
@@ -218,4 +218,37 @@ test("Timeout", async () => {
   expect(error).toBeInstanceOf(Error);
 
   vi.useRealTimers();
+});
+
+test("Echo example. Error handling", async () => {
+  const receiver = new RabbitRPC();
+
+  receiver.handleMessage<string, string>("t7q1", "echo", async (data) => {
+    throw new Error("Special echo error 1");
+  });
+
+  await receiver.init({
+    connectionString,
+    queues: {
+      t7q1: { type: "receiver" },
+    },
+  });
+
+  const sender = new RabbitRPC();
+
+  const echo = sender.makeCall<string, string>("t7q1", "echo");
+
+  await sender.init({
+    connectionString,
+    queues: {
+      t7q1: { type: "sender" },
+    },
+  });
+
+  const data = await echo("Hello world").catch((error) => error);
+
+  expect(data.message).toBe("Special echo error 1");
+
+  await receiver.close();
+  await sender.close();
 });
