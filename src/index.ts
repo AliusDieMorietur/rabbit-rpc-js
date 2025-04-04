@@ -44,13 +44,18 @@ export class RabbitRPC {
     this.#channel = await this.#connection.createChannel();
   }
 
-  #checkInitialized() {
+  #prepareConnection() {
     if (!this.#channel) {
       throw new Error("Channel is not initialized");
     }
     if (!this.#connection) {
       throw new Error("Connection is not initialized");
     }
+
+    return {
+      channel: this.#channel,
+      connection: this.#connection,
+    };
   }
 
   #buildSenderKey(queue: string) {
@@ -58,9 +63,7 @@ export class RabbitRPC {
   }
 
   call(queue: string, message: Omit<DataMessage, "type">) {
-    if (!this.#channel) {
-      throw new Error("Channel is not initialized");
-    }
+    const { channel } = this.#prepareConnection();
     if (!this.#senderKeysMap.has(queue)) {
       throw new Error(`Sender key is not defined for queue: '${queue}'`);
     }
@@ -71,10 +74,14 @@ export class RabbitRPC {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#correlationIdMap.delete(id);
-        reject(new Error(`Call timeout for queue: '${queue}'`));
+        reject(
+          new Error(
+            `Call timeout for queue = '${queue}' and event = '${message.event}'`
+          )
+        );
       }, callTimeout);
       this.#correlationIdMap.set(id, { resolve, timeout, reject });
-      this.#channel?.sendToQueue(
+      channel.sendToQueue(
         queue,
         Buffer.from(JSON.stringify({ ...message, type: "data" })),
         {
@@ -124,7 +131,7 @@ export class RabbitRPC {
 
   #onMessage(queue: string) {
     return async (message: amqp.ConsumeMessage | null) => {
-      this.#checkInitialized();
+      const { channel } = this.#prepareConnection();
       if (!message) {
         console.warn("Message is empty");
         return;
@@ -135,7 +142,6 @@ export class RabbitRPC {
         const { resolve, reject, timeout } = this.#correlationIdMap.get(id)!;
         clearTimeout(timeout);
         if (data.type === "error") {
-          console.log("data.error", data.error);
           reject(new Error(data.error));
         } else {
           resolve(data.data);
@@ -162,7 +168,7 @@ export class RabbitRPC {
                     success: true,
                   },
                 };
-          this.#channel!.sendToQueue(
+          channel.sendToQueue(
             message.properties.replyTo,
             Buffer.from(JSON.stringify(dataToSend)),
             {
@@ -171,24 +177,25 @@ export class RabbitRPC {
           );
         }
       }
-      this.#channel!.ack(message);
+      channel.ack(message);
     };
   }
 
   async addReceiver(queue: string, settings: QueueSettings) {
-    this.#checkInitialized();
+    const { channel } = this.#prepareConnection();
     this.#queueSettings.set(queue, settings);
-    await this.#channel!.assertQueue(queue, { durable: true });
-    await this.#channel!.consume(queue, this.#onMessage.bind(this)(queue));
+    await channel.assertQueue(queue, { durable: true });
+    await channel.consume(queue, this.#onMessage.bind(this)(queue));
   }
 
   async addSender(queue: string, settings: QueueSettings) {
+    const { channel } = this.#prepareConnection();
     this.#queueSettings.set(queue, settings);
     const senderKey = this.#buildSenderKey(queue);
     this.#senderKeysMap.set(queue, senderKey);
-    await this.#channel!.assertQueue(queue, { durable: true });
-    await this.#channel!.assertQueue(senderKey, { durable: true });
-    await this.#channel!.consume(senderKey, this.#onMessage.bind(this)(queue));
+    await channel.assertQueue(queue, { durable: true });
+    await channel.assertQueue(senderKey, { durable: true });
+    await channel.consume(senderKey, this.#onMessage.bind(this)(queue));
   }
 
   async init({

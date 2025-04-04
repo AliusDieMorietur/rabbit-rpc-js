@@ -208,7 +208,7 @@ test("Timeout", async () => {
   await sender.init({
     connectionString,
     queues: {
-      t5q1: { type: "sender", callTimeout: 1000 },
+      t6q1: { type: "sender", callTimeout: 1000 },
     },
   });
 
@@ -216,7 +216,9 @@ test("Timeout", async () => {
   vi.advanceTimersByTime(1500);
   const error = await echoPromise;
   expect(error).toBeInstanceOf(Error);
-
+  expect(error.message).toBe(
+    `Call timeout for queue = 't6q1' and event = 'echo'`
+  );
   vi.useRealTimers();
 });
 
