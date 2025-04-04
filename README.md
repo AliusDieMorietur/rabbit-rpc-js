@@ -25,6 +25,7 @@ pnpm add rabbit-rpc-js
 ## Usage
 
 ```ts
+// receiver.ts
 const receiver = new RabbitRPC();
 
 receiver.handleMessage<string, string>("t1q1", "echo", async (data) => data);
@@ -36,6 +37,10 @@ await receiver.init({
   },
 });
 
+// On shutdown
+await receiver.close();
+
+// sender.ts
 const sender = new RabbitRPC();
 
 const echo = sender.makeCall<string, string>("t1q1", "echo");
@@ -49,9 +54,9 @@ await sender.init({
 
 const data = await echo("Hello world");
 
-console.log(data);
+console.log(data); // "Hello world"
 
-await receiver.close();
+// On shutdown
 await sender.close();
 ```
 
